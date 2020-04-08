@@ -40,6 +40,7 @@ import (
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/fqdn"
 	hubbleV1 "github.com/cilium/cilium/pkg/hubble/api/v1"
+	hubbleServer "github.com/cilium/cilium/pkg/hubble/server"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	"github.com/cilium/cilium/pkg/identity/identitymanager"
@@ -73,6 +74,7 @@ import (
 	"github.com/cilium/cilium/pkg/status"
 	"github.com/cilium/cilium/pkg/trigger"
 	cnitypes "github.com/cilium/cilium/plugins/cilium-cni/types"
+
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/semaphore"
 )
@@ -137,6 +139,8 @@ type Daemon struct {
 	identityAllocator *cache.CachingIdentityAllocator
 
 	k8sWatcher *watchers.K8sWatcher
+
+	hubbleObserver *hubbleServer.LocalObserverServer
 }
 
 // GetPolicyRepository returns the policy repository of the daemon

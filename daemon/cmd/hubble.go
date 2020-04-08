@@ -15,8 +15,14 @@
 package cmd
 
 import (
+	"context"
 	"strings"
+	"time"
 
+	"github.com/go-openapi/strfmt"
+
+	"github.com/cilium/cilium/api/v1/models"
+	observerpb "github.com/cilium/cilium/api/v1/observer"
 	hubbleServe "github.com/cilium/cilium/daemon/cmd/hubble-serve"
 	"github.com/cilium/cilium/pkg/api"
 	"github.com/cilium/cilium/pkg/hubble/listener"
@@ -31,6 +37,46 @@ import (
 
 	"github.com/sirupsen/logrus"
 )
+
+func (d *Daemon) getHubbleStatus(ctx context.Context) *models.HubbleStatus {
+	if !option.Config.EnableHubble {
+		return &models.HubbleStatus{State: models.HubbleStatusStateDisabled}
+	}
+
+	if d.hubbleObserver == nil {
+		return &models.HubbleStatus{
+			State: models.HubbleStatusStateWarning,
+			Msg:   "Server not initialized",
+		}
+	}
+
+	req := &observerpb.ServerStatusRequest{}
+	status, err := d.hubbleObserver.ServerStatus(ctx, req)
+	if err != nil {
+		return &models.HubbleStatus{State: models.HubbleStatusStateFailure, Msg: err.Error()}
+	}
+
+	metricsState := models.HubbleStatusMetricsStateDisabled
+	if option.Config.HubbleMetricsServer != "" {
+		// TODO: The metrics package should be refactored to be able report its actual state
+		metricsState = models.HubbleStatusMetricsStateOk
+	}
+
+	hubbleStatus := &models.HubbleStatus{
+		State: models.StatusStateOk,
+		Observer: &models.HubbleStatusObserver{
+			CurrentFlows: int64(status.NumFlows),
+			MaxFlows:     int64(status.MaxFlows),
+			SeenFlows:    int64(status.SeenFlows),
+			Uptime:       strfmt.Duration(time.Duration(status.UptimeNs)),
+		},
+		Metrics: &models.HubbleStatusMetrics{
+			State: metricsState,
+		},
+	}
+
+	return hubbleStatus
+}
 
 func (d *Daemon) launchHubble() {
 	logger := logging.DefaultLogger.WithField(logfields.LogSubsys, "hubble")
@@ -50,7 +96,7 @@ func (d *Daemon) launchHubble() {
 		logger.WithError(err).Error("Failed to initialize Hubble")
 		return
 	}
-	observerServer, err := hubbleServer.NewLocalServer(payloadParser, logger,
+	d.hubbleObserver, err = hubbleServer.NewLocalServer(payloadParser, logger,
 		serveroption.WithMaxFlows(option.Config.HubbleFlowBufferSize),
 		serveroption.WithMonitorBuffer(option.Config.HubbleEventQueueSize),
 		serveroption.WithCiliumDaemon(d))
@@ -58,13 +104,13 @@ func (d *Daemon) launchHubble() {
 		logger.WithError(err).Error("Failed to initialize Hubble")
 		return
 	}
-	go observerServer.Start()
-	d.monitorAgent.GetMonitor().RegisterNewListener(d.ctx, listener.NewHubbleListener(observerServer))
+	go d.hubbleObserver.Start()
+	d.monitorAgent.GetMonitor().RegisterNewListener(d.ctx, listener.NewHubbleListener(d.hubbleObserver))
 
 	srv, err := hubbleServe.NewServer(logger,
 		hubbleServe.WithListeners(addresses, api.CiliumGroupName),
 		hubbleServe.WithHealthService(),
-		hubbleServe.WithObserverService(observerServer),
+		hubbleServe.WithObserverService(d.hubbleObserver),
 	)
 	if err != nil {
 		logger.WithError(err).Error("Failed to initialize Hubble server")
